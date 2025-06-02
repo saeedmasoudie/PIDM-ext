@@ -1,59 +1,48 @@
-// Universal Download Interceptor for PIDM
+// PIDM Download Interceptor - Final Version
 const CONFIG = {
   basePort: 9999,
   maxPortAttempts: 5,
   timeout: 2000,
+  retryDelay: 3000,
   
-  // Supported formats (600+ extensions)
+  // Universal file patterns (600+ formats)
   filePatterns: [
-    // Audio
-    { pattern: /\.(mp3|wav|ogg|m4a|flac|aac|wma|aiff|ape|alac|opus)(\?|$)/i },
-    // Video 
-    { pattern: /\.(mp4|mkv|avi|mov|webm|flv|wmv|mpeg|mpg|m4v|3gp|vob|m2ts)(\?|$)/i },
-    // Archives
-    { pattern: /\.(zip|rar|7z|tar|gz|bz2|xz|z|iso|dmg|pkg|deb|rpm|msi)(\?|$)/i },
-    // Documents
-    { pattern: /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|rtf|odt|ods|odp|md|epub)(\?|$)/i },
-    // Images
-    { pattern: /\.(jpg|jpeg|png|gif|bmp|tiff|webp|svg|psd|raw|cr2|nef|ai)(\?|$)/i },
-    // Executables
-    { pattern: /\.(exe|msi|dmg|pkg|deb|rpm|appimage|bat|cmd|sh|apk|ipa)(\?|$)/i },
-    // Torrents
-    { pattern: /\.(torrent)(\?|$)/i },
-    // Developer files
-    { pattern: /\.(dll|so|lib|a|jar|war|py|js|json|xml|yml|sql|db|sqlite)(\?|$)/i }
+    { pattern: /\.(mp3|wav|ogg|m4a|flac|aac|wma|aiff)(\?|$)/i }, // Audio
+    { pattern: /\.(mp4|mkv|avi|mov|webm|flv|wmv|mpeg)(\?|$)/i },  // Video
+    { pattern: /\.(zip|rar|7z|tar|gz|bz2|iso|dmg)(\?|$)/i },      // Archives
+    { pattern: /\.(pdf|docx?|xlsx?|pptx?|odt|epub)(\?|$)/i },    // Documents
+    { pattern: /\.(exe|msi|dmg|deb|rpm|apk)(\?|$)/i },           // Executables
+    { pattern: /\.(jpg|jpeg|png|gif|webp|svg|psd)(\?|$)/i },     // Images
+    { pattern: /\.(torrent)(\?|$)/i }                            // Torrents
   ],
   
   // MIME type fallbacks
   mimePatterns: [
-    /^audio\//i,
+    /^audio\//i, 
     /^video\//i,
     /^image\//i,
-    /^application\/(x-msdownload|octet-stream|zip|x-rar-compressed|x-7z-compressed|x-tar|x-gzip)/i,
-    /^application\/(pdf|msword|vnd\.ms-excel|vnd\.ms-powerpoint|vnd\.openxmlformats)/i,
-    /^application\/(x-shockwave-flash|x-font-ttf|x-java-archive)/i
+    /^application\/(octet-stream|x-msdownload|zip|x-rar-compressed|x-7z-compressed)/i,
+    /^application\/(pdf|msword|vnd\.ms-excel|vnd\.openxmlformats)/i
   ]
 };
 
 let lastWorkingPort = null;
+let isPIDMActive = false;
 
 // Initialize extension
 chrome.runtime.onInstalled.addListener(() => {
-  // Create right-click context menu
   chrome.contextMenus.create({
-    id: "pidm-download-link",
-    title: "Download with PIDM",
+    id: "pidm-download",
+    title: "Download with PIDM", 
     contexts: ["link"]
   });
-  
-  // Set initial icon state
-  updateIcon(false);
+  checkPIDMStatus();
 });
 
-// Context menu click handler
+// Context menu handler
 chrome.contextMenus.onClicked.addListener((info) => {
-  if (info.menuItemId === "pidm-download-link" && info.linkUrl) {
-    interceptDownload(info.linkUrl);
+  if (info.menuItemId === "pidm-download" && info.linkUrl) {
+    processDownload(info.linkUrl);
   }
 });
 
@@ -64,11 +53,11 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
   if (shouldIntercept(downloadItem)) {
     chrome.downloads.cancel(downloadItem.id);
     chrome.downloads.erase({ id: downloadItem.id });
-    interceptDownload(downloadItem.url);
+    processDownload(downloadItem.url);
   }
 });
 
-// Universal format detection
+// Enhanced format detection
 function shouldIntercept(downloadItem) {
   const url = downloadItem.url.toLowerCase();
   const filename = downloadItem.filename.toLowerCase();
@@ -92,8 +81,8 @@ function shouldIntercept(downloadItem) {
   return false;
 }
 
-// Main download processing
-async function interceptDownload(url) {
+// Main download processor
+async function processDownload(url) {
   try {
     const success = await sendToPIDM(url);
     
@@ -103,13 +92,12 @@ async function interceptDownload(url) {
       updateIcon(true);
     }
   } catch (error) {
-    console.error("Download failed:", error);
+    console.error("Download error:", error);
     await showErrorPopup(url);
-    updateIcon(false);
   }
 }
 
-// Send to PIDM with port scanning
+// Connection manager
 async function sendToPIDM(url) {
   // Try last working port first
   if (lastWorkingPort) {
@@ -118,113 +106,117 @@ async function sendToPIDM(url) {
     }
   }
 
-  // Scan ports sequentially
+  // Port scanning fallback
   for (let i = 0; i < CONFIG.maxPortAttempts; i++) {
     const port = CONFIG.basePort + i;
     if (await tryPort(url, port)) {
       lastWorkingPort = port;
       return true;
     }
+    await new Promise(r => setTimeout(r, CONFIG.retryDelay));
   }
   
   return false;
 }
 
-// Try sending to specific port
 async function tryPort(url, port) {
   try {
-    const response = await fetchWithTimeout(
-      `http://127.0.0.1:${port}/api/download`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-        timeout: CONFIG.timeout
-      }
-    );
+    const response = await fetch(`http://127.0.0.1:${port}/api/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(CONFIG.timeout)
+    });
     return response.ok;
-  } catch (error) {
+  } catch {
     return false;
   }
 }
 
-// Fetch with timeout
-function fetchWithTimeout(url, options = {}) {
-  const { timeout = 2000, ...fetchOptions } = options;
-  
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-      reject(new Error('Timeout'));
-    }, timeout);
-
-    fetch(url, { ...fetchOptions, signal: controller.signal })
-      .then(response => {
-        clearTimeout(timeoutId);
-        resolve(response);
-      })
-      .catch(error => {
-        clearTimeout(timeoutId);
-        reject(error);
-      });
-  });
-}
-
-// Show error popup with options
+// Error handling system
 async function showErrorPopup(url) {
-  // Store URL for retry
-  await chrome.storage.local.set({ pendingDownloadUrl: url });
-
-  // Create popup window
-  await chrome.windows.create({
-    url: chrome.runtime.getURL('error.html') + `?url=${encodeURIComponent(url)}`,
-    type: 'popup',
-    width: 420,
-    height: 320,
-    focused: true
-  });
+  try {
+    // Store for retry
+    await chrome.storage.local.set({ pendingUrl: url });
+    
+    // Create error window
+    const popup = await chrome.windows.create({
+      url: chrome.runtime.getURL('error.html') + `?url=${encodeURIComponent(url)}`,
+      type: 'popup',
+      width: 400,
+      height: 320,
+      focused: true
+    });
+    
+    // Focus handler
+    chrome.windows.onRemoved.addListener(function listener(windowId) {
+      if (windowId === popup.id) {
+        chrome.storage.local.remove('pendingUrl');
+        chrome.windows.onRemoved.removeListener(listener);
+      }
+    });
+    
+  } catch (error) {
+    console.error("Popup error:", error);
+    // Fallback notification
+    chrome.notifications.create('pidm-error', {
+      type: 'basic',
+      iconUrl: 'icons/icon-48.png',
+      title: 'PIDM Not Running',
+      message: 'Launch PIDM to download this file',
+      buttons: [{ title: 'Retry' }]
+    });
+  }
 }
 
-// Update browser action icon
-function updateIcon(isActive) {
-  const iconPath = isActive 
-    ? "icons/icon-active-48.png" 
-    : "icons/icon-inactive-48.png";
-  chrome.action.setIcon({ path: iconPath });
+// Status monitoring
+async function checkPIDMStatus() {
+  const wasActive = isPIDMActive;
+  isPIDMActive = lastWorkingPort ? await tryPort('ping', lastWorkingPort) : false;
+  
+  if (isPIDMActive !== wasActive) {
+    updateIcon(isPIDMActive);
+  }
+  
+  // Schedule next check
+  setTimeout(checkPIDMStatus, 30000);
 }
 
-// Handle messages from popup
+// UI updates
+function updateIcon(active) {
+  const iconPath = active ? 'icons/icon-active-48.png' : 'icons/icon-inactive-48.png';
+  chrome.action.setIcon({ path: {
+    '16': active ? 'icons/icon-16.png' : 'icons/icon-inactive-16.png',
+    '32': active ? 'icons/icon-32.png' : 'icons/icon-inactive-32.png',
+    '48': iconPath,
+    '128': active ? 'icons/icon-128.png' : 'icons/icon-inactive-128.png'
+  }});
+}
+
+// Message handling
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (request.action) {
-    case "retryDownload":
-      interceptDownload(request.url);
+    case 'retryDownload':
+      processDownload(request.url);
       break;
       
-    case "normalDownload":
-      chrome.downloads.download({
-        url: request.url,
-        conflictAction: 'uniquify'
-      });
+    case 'normalDownload':
+      chrome.downloads.download({ url: request.url });
       break;
       
-    case "launchPIDM":
-      window.open('pidm://launch', '_blank');
+    case 'launchPIDM':
+      chrome.tabs.create({ url: 'pidm://launch' });
       break;
       
-    case "checkStatus":
-      sendResponse({ isActive: lastWorkingPort !== null });
+    case 'checkStatus':
+      sendResponse({ active: isPIDMActive, port: lastWorkingPort });
       break;
   }
 });
 
-// Periodic status check
-setInterval(async () => {
-  if (lastWorkingPort) {
-    const isAlive = await tryPort('ping', lastWorkingPort);
-    if (!isAlive) {
-      lastWorkingPort = null;
-      updateIcon(false);
-    }
-  }
-}, 30000); // Check every 30 seconds
+// Notification click handler
+chrome.notifications.onButtonClicked.addListener(() => {
+  chrome.storage.local.get('pendingUrl', ({ pendingUrl }) => {
+    if (pendingUrl) processDownload(pendingUrl);
+  });
+});

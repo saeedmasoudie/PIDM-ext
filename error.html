@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PIDM Required</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      text-align: center;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h2 {
+      color: #d32f2f;
+    }
+    .buttons {
+      margin-top: 25px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    button {
+      padding: 10px 15px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.3s;
+    }
+    #launchBtn {
+      background: #4285f4;
+      color: white;
+    }
+    #launchBtn:hover {
+      background: #3367d6;
+    }
+    #retryBtn {
+      background: #f1f1f1;
+    }
+    #retryBtn:hover {
+      background: #e0e0e0;
+    }
+    #normalBtn {
+      background: white;
+      border: 1px solid #ddd;
+    }
+    #normalBtn:hover {
+      background: #f9f9f9;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>PIDM Not Running</h2>
+    <p>Please launch PIDM Download Manager to continue with your download.</p>
+    
+    <div class="buttons">
+      <button id="launchBtn">Launch PIDM</button>
+      <button id="retryBtn">Retry with PIDM</button>
+      <button id="normalBtn">Download Normally</button>
+    </div>
+  </div>
+
+  <script src="error.js"></script>
+</body>
+</html>
