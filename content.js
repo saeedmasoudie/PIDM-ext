@@ -6,7 +6,7 @@ document.addEventListener("click", function (e) {
   // Check for download attribute or common download patterns
   const isDownload = 
     anchor.hasAttribute("download") ||
-    anchor.href.match(/\.(exe|zip|rar|mp4|mkv|pdf)(\?|$)/i);
+    anchor.href.match(/\.(exe|zip|rar|tar|7z|mp4|mkv|avi|mov|wmv|flv|webm|mp3|wav|flac|aac|ogg|pdf|epub|txt|doc|docx|xls|xlsx|ppt|pptx|csv|png|jpg|jpeg|gif|bmp|tiff|psd|svg|ico)(\?|$)/i);
   
   if (isDownload) {
     e.preventDefault();

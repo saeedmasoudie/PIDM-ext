@@ -7,7 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     retryButton.addEventListener('click', () => {
       // Check if PIDM is running now
-      fetch(`http://127.0.0.1:9999/api/status`)
+      fetch(`http://127.0.0.1:9999/api/download`)
         .then(response => {
           if (response.ok) {
             // PIDM is running, retry the download

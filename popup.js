@@ -6,7 +6,7 @@ async function checkPIDMConnection() {
   
   try {
     // Try the default port
-    const response = await fetch(`http://127.0.0.1:9999/api/status`, {
+    const response = await fetch(`http://127.0.0.1:9999/api/download`, {
       method: "GET",
       timeout: 1500
     }).catch(() => null);
