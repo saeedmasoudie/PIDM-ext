@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PIDM Required</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      text-align: center;
+      background: #f9f9f9;
+    }
+    .container {
+      max-width: 350px;
+      margin: 0 auto;
+    }
+    h2 {
+      color: #d32f2f;
+    }
+    .icon {
+      font-size: 48px;
+      color: #d32f2f;
+      margin: 20px 0;
+    }
+    button {
+      background: #4285f4;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      margin-top: 20px;
+    }
+    button:hover {
+      background: #3367d6;
+    }
+    .try-again {
+      margin-top: 15px;
+      font-size: 14px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">⚠️</div>
+    <h2>PIDM Not Running</h2>
+    <p>Please open PIDM Download Manager to continue with your download.</p>
+    
+    <button id="retryButton">Try Again</button>
+    
+    <div class="try-again">
+      <p>Or <a href="#" id="normalDownload">download normally</a> without PIDM</p>
+    </div>
+  </div>
+
+  <script src="pidm_error.js"></script>
+</body>
+</html>
