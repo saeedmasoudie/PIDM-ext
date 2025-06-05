@@ -5,31 +5,27 @@
 
   // Detect all download triggers
   const detectDownloadTriggers = (target) => {
-    // Standard <a download> elements
-    if (target.tagName === 'A' && target.hasAttribute('download')) {
-      return target.href;
-    }
+  const href = target.href || target.dataset.href;
 
-    // Video/audio source elements
-    if (['VIDEO', 'AUDIO'].includes(target.tagName)) {
-      const src = target.src || target.currentSrc;
-      if (src) return src;
-    }
+  // Skip empty, JS-based, or anchor links
+  if (!href || href.startsWith('#') || href.startsWith('javascript:')) return null;
 
-    // JavaScript download triggers
-    if (target.getAttribute?.('onclick')?.includes('download') ||
-        target.getAttribute?.('onmousedown')?.includes('download')) {
-      return target.href || target.dataset.href;
-    }
+  // Only process actual downloadable file types
+  const fileRegex = /\.(zip|rar|7z|pdf|mp3|mp4|avi|docx?|xlsx?|exe|apk|iso)(\?|$)/i;
+  const looksLikeFile = fileRegex.test(href);
 
-    // Common download button patterns
-    if (target.classList?.toString().includes('download') ||
-        target.id?.includes('download')) {
-      return target.href || target.dataset.href;
-    }
+  // <a download>
+  if (target.tagName === 'A' && target.hasAttribute('download') && looksLikeFile) return href;
 
-    return null;
-  };
+  // Class/id contains "download" + href looks like a file
+  const hasDownloadKeyword = /(download|dl|save)(\b|_)/i;
+  if ((hasDownloadKeyword.test(target.className || '') || hasDownloadKeyword.test(target.id || '')) && looksLikeFile) {
+    return href;
+  }
+
+  return null;
+};
+
 
   // Intercept click events
   const handleClick = (e) => {
@@ -118,4 +114,14 @@
       }, '*');
     }
   });
+
+  setInterval(() => {
+    document.querySelectorAll('a[download], [class*="download"], [onclick*="download"]').forEach(el => {
+      if (!handledElements.has(el)) {
+        el.addEventListener('click', handleClick, { capture: true });
+        handledElements.add(el);
+      }
+    });
+  }, 5000);
+  
 })();

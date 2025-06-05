@@ -40,20 +40,31 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 // Context menu handler
-chrome.contextMenus.onClicked.addListener((info) => {
+chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "pidm-download" && info.linkUrl) {
-    processDownload(info.linkUrl);
+    processDownload(info.linkUrl, tab ? tab.url : null);
   }
 });
 
 // Download interception
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
   if (!downloadItem.url || downloadItem.state !== "in_progress") return;
-  
-  if (shouldIntercept(downloadItem)) {
+
+  if (shouldIntercept(downloadItem) && !isJunkUrl(downloadItem.url)) {
     chrome.downloads.cancel(downloadItem.id);
     chrome.downloads.erase({ id: downloadItem.id });
-    processDownload(downloadItem.url);
+
+    // Try to get the tab where the download originated for referrer info
+    let referrer = downloadItem.referrer; // Use built-in referrer if available
+    if (!referrer && downloadItem.tabId && downloadItem.tabId !== chrome.tabs.TAB_ID_NONE) {
+      try {
+        const tab = await chrome.tabs.get(downloadItem.tabId);
+        referrer = tab.url;
+      } catch (e) {
+        console.warn("Could not get tab URL for referrer:", e);
+      }
+    }
+    processDownload(downloadItem.url, referrer, downloadItem.referrer);
   }
 });
 
@@ -81,11 +92,39 @@ function shouldIntercept(downloadItem) {
   return false;
 }
 
-// Main download processor
-async function processDownload(url) {
+function isJunkUrl(url) {
+  const junkPatterns = [
+    /\/(ping|track|pixel|stats|metrics)\b/i,
+    /\.js(\?|$)/i,
+    /\.css(\?|$)/i,
+    /\.ico(\?|$)/i,
+    /\.woff2?(\?|$)/i,
+    /google-analytics\.com/i,
+    /gtag\./i
+  ];
+  return junkPatterns.some(pattern => pattern.test(url));
+}
+
+
+async function getCookiesForUrl(url) {
   try {
-    const success = await sendToPIDM(url);
-    
+    const domainCookies = await chrome.cookies.getAll({ url: url });
+    return domainCookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+  } catch (e) {
+    console.error("Error getting cookies:", e);
+    return "";
+  }
+}
+
+// Modify processDownload to accept more details
+async function processDownload(url, pageUrl = null, docReferrer = null) {
+  try {
+    const referrer = pageUrl || docReferrer || (new URL(url)).origin + "/";
+
+    const cookies = await getCookiesForUrl(url);
+
+    const success = await sendToPIDM(url, cookies, referrer);
+
     if (!success) {
       await showErrorPopup(url);
     } else {
@@ -98,10 +137,10 @@ async function processDownload(url) {
 }
 
 // Connection manager
-async function sendToPIDM(url) {
-  // Try last working port first
+// Modify sendToPIDM
+async function sendToPIDM(url, cookies, referrer) {
   if (lastWorkingPort) {
-    if (await tryPort(url, lastWorkingPort)) {
+    if (await tryPort(url, lastWorkingPort, cookies, referrer)) {
       return true;
     }
   }
@@ -109,7 +148,7 @@ async function sendToPIDM(url) {
   // Port scanning fallback
   for (let i = 0; i < CONFIG.maxPortAttempts; i++) {
     const port = CONFIG.basePort + i;
-    if (await tryPort(url, port)) {
+    if (await tryPort(url, port, cookies, referrer)) { // Pass them along
       lastWorkingPort = port;
       return true;
     }
@@ -119,12 +158,19 @@ async function sendToPIDM(url) {
   return false;
 }
 
-async function tryPort(url, port) {
+// Modify tryPort
+async function tryPort(url, port, cookies, referrer) { // Added cookies, referrer
   try {
+    const payload = {
+      url: url,
+      cookies: cookies,
+      referrer: referrer
+    };
+
     const response = await fetch(`http://127.0.0.1:${port}/api/download`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(CONFIG.timeout)
     });
     return response.ok;
@@ -196,23 +242,36 @@ function updateIcon(active) {
 // Message handling
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (request.action) {
+    case 'downloadIntercepted':
+      if (!isJunkUrl(request.url)) {
+        processDownload(request.url, request.pageUrl, request.referrer);
+      }
+      break;
+    case 'iframeDownload':
+      if (request.url) processDownload(request.url);
+      break;
+
+    case 'streamIntercepted':
+      console.warn("Stream intercepted:", request.url);
+      break;
+
+    case 'checkPIDM':
+      checkPIDMRunning().then((running) => sendResponse({ running }));
+      return true;
+
+    case 'openPopup':
+      chrome.action.openPopup();
+      break;
+
     case 'retryDownload':
-      processDownload(request.url);
-      break;
-      
-    case 'normalDownload':
-      chrome.downloads.download({ url: request.url });
-      break;
-      
-    case 'launchPIDM':
-      chrome.tabs.create({ url: 'pidm://launch' });
-      break;
-      
-    case 'checkStatus':
-      sendResponse({ active: isPIDMActive, port: lastWorkingPort });
+      if (!isJunkUrl(request.url)) {
+        processDownload(request.url, request.pageUrl, request.referrer);
+      }
       break;
   }
+  return true;
 });
+
 
 // Notification click handler
 chrome.notifications.onButtonClicked.addListener(() => {
