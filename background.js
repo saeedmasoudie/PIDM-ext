@@ -1,11 +1,11 @@
-// PIDM Download Interceptor - Final Version
+// PIDM Download Interceptor - background.js
+
 const CONFIG = {
-  basePort: 9999,
-  maxPortAttempts: 5,
-  timeout: 2000,
-  retryDelay: 3000,
+  basePort: 49152,
+  maxPortAttempts: 10,
+  pingTimeout: 300,   // A very fast timeout for ping requests
+  sendTimeout: 5000,  // A longer timeout for sending the actual data
   
-  // Universal file patterns (600+ formats)
   filePatterns: [
     { pattern: /\.(mp3|wav|ogg|m4a|flac|aac|wma|aiff)(\?|$)/i }, // Audio
     { pattern: /\.(mp4|mkv|avi|mov|webm|flv|wmv|mpeg)(\?|$)/i },  // Video
@@ -15,8 +15,6 @@ const CONFIG = {
     { pattern: /\.(jpg|jpeg|png|gif|webp|svg|psd)(\?|$)/i },     // Images
     { pattern: /\.(torrent)(\?|$)/i }                            // Torrents
   ],
-  
-  // MIME type fallbacks
   mimePatterns: [
     /^audio\//i, 
     /^video\//i,
@@ -26,256 +24,222 @@ const CONFIG = {
   ]
 };
 
+// --- State Variables ---
 let lastWorkingPort = null;
-let isPIDMActive = false;
+let isFindingPort = false; // A lock to prevent multiple concurrent scans
 
-// Initialize extension
+// --- Core Connection Logic (NEW & IMPROVED) ---
+
+/**
+ * Pings a specific port to see if the PIDM listener is active there.
+ * @param {number} port The port to ping.
+ * @returns {Promise<boolean>} True if the port responds correctly, false otherwise.
+ */
+async function pingPort(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/ping`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(CONFIG.pingTimeout)
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return data.status === 'pidm_active';
+    }
+  } catch (e) {
+    // This is expected if the port is not open or doesn't respond in time.
+  }
+  return false;
+}
+
+/**
+ * Finds the active PIDM port. It first checks the last known good port,
+ * then scans the defined range. Caches the result for future use.
+ * @returns {Promise<number|null>} The active port number, or null if not found.
+ */
+async function findActivePort() {
+  if (isFindingPort) return lastWorkingPort;
+  isFindingPort = true;
+
+  // 1. Check if the last known port is still working (fast path).
+  if (lastWorkingPort) {
+    if (await pingPort(lastWorkingPort)) {
+      isFindingPort = false;
+      return lastWorkingPort;
+    }
+    lastWorkingPort = null; // It's gone, so clear the cache.
+    updateIcon(false);
+  }
+
+  // 2. If not, scan the full range to find a new active port.
+  for (let i = 0; i < CONFIG.maxPortAttempts; i++) {
+    const port = CONFIG.basePort + i;
+    if (await pingPort(port)) {
+      lastWorkingPort = port; // Cache the new working port.
+      updateIcon(true);
+      isFindingPort = false;
+      return port;
+    }
+  }
+
+  // 3. If no port was found after scanning.
+  updateIcon(false);
+  isFindingPort = false;
+  return null;
+}
+
+/**
+ * Sends the final download payload to the active PIDM port.
+ * @param {object} payload The download data (url, cookies, etc.).
+ * @returns {Promise<boolean>} True on success, false on failure.
+ */
+async function sendToPIDM(payload) {
+  const activePort = await findActivePort();
+
+  if (!activePort) {
+    console.error("Could not find active PIDM listener.");
+    await showErrorPopup(payload.url);
+    return false;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${activePort}/api/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(CONFIG.sendTimeout)
+    });
+
+    if (response.ok) {
+      console.log("Successfully sent download to PIDM.");
+      return true;
+    } else {
+      console.error("PIDM listener returned an error:", response.status);
+      await showErrorPopup(payload.url);
+    }
+  } catch (e) {
+    console.error("Failed to send download data to PIDM:", e);
+    // The port probably died, so clear the cache and show the error.
+    lastWorkingPort = null;
+    updateIcon(false);
+    await showErrorPopup(payload.url);
+  }
+  return false;
+}
+
+
+// --- Main Download Processing & Event Listeners ---
+
+async function processDownload(url, pageUrl = null, docReferrer = null) {
+  try {
+    const referrer = pageUrl || docReferrer || (new URL(url)).origin + "/";
+    const cookies = await getCookiesForUrl(url);
+    
+    const payload = {
+        url: url,
+        cookies: cookies,
+        referrer: referrer,
+        userAgent: navigator.userAgent
+    };
+
+    await sendToPIDM(payload);
+
+  } catch (error) {
+    console.error("Error preparing download:", error);
+    await showErrorPopup(url);
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: "pidm-download",
     title: "Download with PIDM", 
-    contexts: ["link"]
+    contexts: ["link", "video", "audio", "image"]
   });
-  checkPIDMStatus();
+  findActivePort(); // Check for PIDM status on startup/install
 });
 
-// Context menu handler
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "pidm-download" && info.linkUrl) {
-    processDownload(info.linkUrl, tab ? tab.url : null);
+  if (info.menuItemId === "pidm-download") {
+    const url = info.linkUrl || info.srcUrl;
+    if (url) {
+      processDownload(url, tab ? tab.url : null);
+    }
   }
 });
 
-// Download interception
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
-  if (!downloadItem.url || downloadItem.state !== "in_progress") return;
+  if (!downloadItem.url || downloadItem.state !== "in_progress" || isJunkUrl(downloadItem.url)) {
+      return;
+  }
 
-  if (shouldIntercept(downloadItem) && !isJunkUrl(downloadItem.url)) {
+  if (shouldIntercept(downloadItem)) {
     chrome.downloads.cancel(downloadItem.id);
     chrome.downloads.erase({ id: downloadItem.id });
 
-    // Try to get the tab where the download originated for referrer info
-    let referrer = downloadItem.referrer; // Use built-in referrer if available
+    let referrer = downloadItem.referrer;
     if (!referrer && downloadItem.tabId && downloadItem.tabId !== chrome.tabs.TAB_ID_NONE) {
       try {
         const tab = await chrome.tabs.get(downloadItem.tabId);
         referrer = tab.url;
-      } catch (e) {
-        console.warn("Could not get tab URL for referrer:", e);
-      }
+      } catch (e) { console.warn("Could not get tab URL for referrer:", e); }
     }
     processDownload(downloadItem.url, referrer, downloadItem.referrer);
   }
 });
 
-// Enhanced format detection
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'retryDownload' && request.url) {
+    processDownload(request.url, request.pageUrl, request.referrer);
+  }
+  return true; // Keep the message channel open for async responses if any.
+});
+
+
+// --- Helper Functions ---
+
 function shouldIntercept(downloadItem) {
   const url = downloadItem.url.toLowerCase();
   const filename = downloadItem.filename.toLowerCase();
-  
-  // 1. Check URL patterns
-  if (CONFIG.filePatterns.some(fp => fp.pattern.test(url))) {
+  if (CONFIG.filePatterns.some(fp => fp.pattern.test(url) || fp.pattern.test(filename))) {
     return true;
   }
-  
-  // 2. Check filename patterns
-  if (CONFIG.filePatterns.some(fp => fp.pattern.test(filename))) {
-    return true;
-  }
-  
-  // 3. Check MIME type
   if (downloadItem.mime) {
     const mime = downloadItem.mime.split(';')[0].trim();
     return CONFIG.mimePatterns.some(mp => mp.test(mime));
   }
-  
   return false;
 }
 
 function isJunkUrl(url) {
   const junkPatterns = [
     /\/(ping|track|pixel|stats|metrics)\b/i,
-    /\.js(\?|$)/i,
-    /\.css(\?|$)/i,
-    /\.ico(\?|$)/i,
-    /\.woff2?(\?|$)/i,
-    /google-analytics\.com/i,
-    /gtag\./i
+    /\.js(\?|$)/i, /\.css(\?|$)/i, /\.ico(\?|$)/i, /\.woff2?(\?|$)/i,
+    /google-analytics\.com/i, /gtag\./i
   ];
   return junkPatterns.some(pattern => pattern.test(url));
 }
-
 
 async function getCookiesForUrl(url) {
   try {
     const domainCookies = await chrome.cookies.getAll({ url: url });
     return domainCookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
-  } catch (e) {
-    console.error("Error getting cookies:", e);
-    return "";
-  }
+  } catch (e) { console.error("Error getting cookies:", e); return ""; }
 }
 
-// Modify processDownload to accept more details
-async function processDownload(url, pageUrl = null, docReferrer = null) {
-  try {
-    const referrer = pageUrl || docReferrer || (new URL(url)).origin + "/";
-
-    const cookies = await getCookiesForUrl(url);
-
-    const success = await sendToPIDM(url, cookies, referrer);
-
-    if (!success) {
-      await showErrorPopup(url);
-    } else {
-      updateIcon(true);
-    }
-  } catch (error) {
-    console.error("Download error:", error);
-    await showErrorPopup(url);
-  }
-}
-
-// Connection manager
-// Modify sendToPIDM
-async function sendToPIDM(url, cookies, referrer) {
-  if (lastWorkingPort) {
-    if (await tryPort(url, lastWorkingPort, cookies, referrer)) {
-      return true;
-    }
-  }
-
-  // Port scanning fallback
-  for (let i = 0; i < CONFIG.maxPortAttempts; i++) {
-    const port = CONFIG.basePort + i;
-    if (await tryPort(url, port, cookies, referrer)) { // Pass them along
-      lastWorkingPort = port;
-      return true;
-    }
-    await new Promise(r => setTimeout(r, CONFIG.retryDelay));
-  }
-  
-  return false;
-}
-
-// Modify tryPort
-async function tryPort(url, port, cookies, referrer) { // Added cookies, referrer
-  try {
-    const payload = {
-      url: url,
-      cookies: cookies,
-      referrer: referrer
-    };
-
-    const response = await fetch(`http://127.0.0.1:${port}/api/download`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(CONFIG.timeout)
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-// Error handling system
 async function showErrorPopup(url) {
   try {
-    // Store for retry
-    await chrome.storage.local.set({ pendingUrl: url });
-    
-    // Create error window
-    const popup = await chrome.windows.create({
+    await chrome.windows.create({
       url: chrome.runtime.getURL('error.html') + `?url=${encodeURIComponent(url)}`,
-      type: 'popup',
-      width: 400,
-      height: 320,
-      focused: true
+      type: 'popup', width: 400, height: 320, focused: true
     });
-    
-    // Focus handler
-    chrome.windows.onRemoved.addListener(function listener(windowId) {
-      if (windowId === popup.id) {
-        chrome.storage.local.remove('pendingUrl');
-        chrome.windows.onRemoved.removeListener(listener);
-      }
-    });
-    
-  } catch (error) {
-    console.error("Popup error:", error);
-    // Fallback notification
-    chrome.notifications.create('pidm-error', {
-      type: 'basic',
-      iconUrl: 'icons/icon-48.png',
-      title: 'PIDM Not Running',
-      message: 'Launch PIDM to download this file',
-      buttons: [{ title: 'Retry' }]
-    });
-  }
+  } catch (error) { console.error("Popup error:", error); }
 }
 
-// Status monitoring
-async function checkPIDMStatus() {
-  const wasActive = isPIDMActive;
-  isPIDMActive = lastWorkingPort ? await tryPort('ping', lastWorkingPort) : false;
-  
-  if (isPIDMActive !== wasActive) {
-    updateIcon(isPIDMActive);
-  }
-  
-  // Schedule next check
-  setTimeout(checkPIDMStatus, 30000);
-}
-
-// UI updates
 function updateIcon(active) {
-  const iconPath = active ? 'icons/icon-active-48.png' : 'icons/icon-inactive-48.png';
-  chrome.action.setIcon({ path: {
-    '16': active ? 'icons/icon-16.png' : 'icons/icon-inactive-16.png',
-    '32': active ? 'icons/icon-32.png' : 'icons/icon-inactive-32.png',
-    '48': iconPath,
-    '128': active ? 'icons/icon-128.png' : 'icons/icon-inactive-128.png'
-  }});
+  const iconSet = {
+    '16': `icons/icon-${active ? 'active' : 'inactive'}-16.png`,
+    '48': `icons/icon-${active ? 'active' : 'inactive'}-48.png`,
+    '128': `icons/icon-${active ? 'active' : 'inactive'}-128.png`
+  };
+  chrome.action.setIcon({ path: iconSet });
 }
-
-// Message handling
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  switch (request.action) {
-    case 'downloadIntercepted':
-      if (!isJunkUrl(request.url)) {
-        processDownload(request.url, request.pageUrl, request.referrer);
-      }
-      break;
-    case 'iframeDownload':
-      if (request.url) processDownload(request.url);
-      break;
-
-    case 'streamIntercepted':
-      console.warn("Stream intercepted:", request.url);
-      break;
-
-    case 'checkPIDM':
-      checkPIDMRunning().then((running) => sendResponse({ running }));
-      return true;
-
-    case 'openPopup':
-      chrome.action.openPopup();
-      break;
-
-    case 'retryDownload':
-      if (!isJunkUrl(request.url)) {
-        processDownload(request.url, request.pageUrl, request.referrer);
-      }
-      break;
-  }
-  return true;
-});
-
-
-// Notification click handler
-chrome.notifications.onButtonClicked.addListener(() => {
-  chrome.storage.local.get('pendingUrl', ({ pendingUrl }) => {
-    if (pendingUrl) processDownload(pendingUrl);
-  });
-});
