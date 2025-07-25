@@ -1,127 +1,120 @@
-// Enhanced Content Script for Universal Download Detection
+/**
+ * copyright - https://github.com/saeedmasoudie/PIDM-ext
+ * This script runs on every page and is responsible for two main tasks:
+ * 1. Intercepting standard download links and sending them to the background script.
+ * 2. Finding video/stream elements on the page and injecting a custom "Download with PIDM" button.
+ */
 (() => {
-  // Track clicked elements to prevent duplicate handling
-  const handledElements = new WeakSet();
+    // --- Stream Detection and UI Injection ---
+    const processedVideos = new WeakSet();
 
-  // Detect all download triggers
-  const detectDownloadTriggers = (target) => {
-  const href = target.href || target.dataset.href;
+    function createUiContainer(videoElement) {
+        const container = document.createElement('div');
+        container.className = 'pidm-button-container';
 
-  // Skip empty, JS-based, or anchor links
-  if (!href || href.startsWith('#') || href.startsWith('javascript:')) return null;
+        // --- Download Button ---
+        const downloadButton = document.createElement('button');
+        downloadButton.className = 'pidm-download-button';
+        downloadButton.innerHTML = `
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>Download</span>
+        `;
+        downloadButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
 
-  // Only process actual downloadable file types
-  const fileRegex = /\.(zip|rar|7z|pdf|mp3|mp4|avi|docx?|xlsx?|exe|apk|iso)(\?|$)/i;
-  const looksLikeFile = fileRegex.test(href);
+            let streamUrl = videoElement.src;
+            if (!streamUrl) {
+                const sourceElement = videoElement.querySelector('source[src]');
+                if (sourceElement) streamUrl = sourceElement.src;
+            }
 
-  // <a download>
-  if (target.tagName === 'A' && target.hasAttribute('download') && looksLikeFile) return href;
-
-  // Class/id contains "download" + href looks like a file
-  const hasDownloadKeyword = /(download|dl|save)(\b|_)/i;
-  if ((hasDownloadKeyword.test(target.className || '') || hasDownloadKeyword.test(target.id || '')) && looksLikeFile) {
-    return href;
-  }
-
-  return null;
-};
-
-
-  // Intercept click events
-  const handleClick = (e) => {
-    // Check if we already processed this element
-    if (handledElements.has(e.target)) return;
-    
-    // Check all possible click paths (including parent elements)
-    let downloadUrl = null;
-    for (let el = e.target; el && el !== document; el = el.parentElement) {
-      downloadUrl = detectDownloadTriggers(el);
-      if (downloadUrl) {
-        handledElements.add(el);
-        break;
-      }
-    }
-
-    if (!downloadUrl) return;
-
-    // Special handling for streaming URLs
-    if (downloadUrl.includes('m3u8') || downloadUrl.includes('mpd')) {
-      chrome.runtime.sendMessage({
-        action: 'streamIntercepted',
-        url: downloadUrl,
-        pageUrl: window.location.href
-      });
-      e.preventDefault();
-      return;
-    }
-
-    // Standard download handling
-    chrome.runtime.sendMessage({
-      action: 'downloadIntercepted',
-      url: downloadUrl,
-      pageUrl: window.location.href,
-      referrer: document.referrer
-    }).catch(() => {
-      // Fallback to normal download if extension fails
-      window.location.href = downloadUrl;
-    });
-
-    e.preventDefault();
-    e.stopImmediatePropagation();
-  };
-
-  // MutationObserver for dynamic content
-  const observer = new MutationObserver((mutations) => {
-    mutations.forEach((mutation) => {
-      mutation.addedNodes.forEach((node) => {
-        if (node.nodeType === 1) { // Element node
-          node.querySelectorAll?.('a[download], video, audio, [onclick*="download"], [class*="download"]').forEach((el) => {
-            el.addEventListener('click', handleClick, { capture: true });
-          });
-        }
-      });
-    });
-  });
-
-  // Initial setup
-  document.addEventListener('click', handleClick, { capture: true });
-  observer.observe(document, {
-    subtree: true,
-    childList: true,
-    attributes: true,
-    attributeFilter: ['href', 'download', 'onclick', 'class', 'id']
-  });
-
-  // Detect iframe downloads
-  if (window !== window.top) {
-    window.addEventListener('message', (event) => {
-      if (event.data?.type === 'downloadTriggered') {
-        chrome.runtime.sendMessage({
-          action: 'iframeDownload',
-          url: event.data.url,
-          sourceUrl: window.location.href
+            if (streamUrl) {
+                chrome.runtime.sendMessage({
+                    action: 'sendToPidm',
+                    url: streamUrl,
+                    isStream: true,
+                    pageUrl: window.location.href,
+                    referrer: document.referrer
+                });
+                container.innerHTML = '<div style="padding: 20px; text-align: center; font-size: 14px; color: white;">Sent!</div>';
+                setTimeout(() => { container.style.display = 'none'; }, 2000);
+            } else {
+                container.innerHTML = '<div style="padding: 20px; text-align: center; font-size: 14px; color: #ff8a80;">Error</div>';
+            }
         });
-      }
-    });
-  }
 
-  // Inject download detection into new windows
-  window.addEventListener('beforeunload', () => {
-    if (window.opener) {
-      window.opener.postMessage({
-        type: 'windowDownload',
-        url: window.location.href
-      }, '*');
+        // --- Ignore Button ---
+        const ignoreButton = document.createElement('button');
+        ignoreButton.className = 'pidm-ignore-button';
+        ignoreButton.textContent = 'Ignore';
+        ignoreButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            
+            const videoSrc = videoElement.src || videoElement.querySelector('source[src]')?.src;
+            if (videoSrc) {
+                sessionStorage.setItem(`pidm-ignored-${videoSrc}`, 'true');
+            }
+            container.remove();
+        });
+
+        container.appendChild(downloadButton);
+        container.appendChild(ignoreButton);
+        return container;
     }
-  });
 
-  setInterval(() => {
-    document.querySelectorAll('a[download], [class*="download"], [onclick*="download"]').forEach(el => {
-      if (!handledElements.has(el)) {
-        el.addEventListener('click', handleClick, { capture: true });
-        handledElements.add(el);
-      }
-    });
-  }, 5000);
-  
+    function injectVideoButtons() {
+        document.querySelectorAll('video, iframe').forEach(element => {
+            if (processedVideos.has(element)) return;
+
+            const videoSrc = element.src || element.querySelector('source[src]')?.src;
+            if (videoSrc && sessionStorage.getItem(`pidm-ignored-${videoSrc}`)) {
+                return;
+            }
+
+            const isStream = (videoSrc && (videoSrc.includes('blob:') || videoSrc.includes('.m3u8') || videoSrc.includes('.mpd'))) || element.tagName === 'VIDEO';
+
+            if (isStream) {
+                processedVideos.add(element);
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'pidm-video-wrapper';
+                element.parentNode.insertBefore(wrapper, element);
+                wrapper.appendChild(element);
+
+                const uiContainer = createUiContainer(element);
+                wrapper.appendChild(uiContainer);
+            }
+        });
+    }
+
+    // --- Standard Download Link Interception ---
+    document.addEventListener('click', (event) => {
+        const link = event.target.closest('a');
+        if (!link || !link.href) return;
+
+        const url = link.href;
+        const fileExtensionRegex = /\.(zip|rar|7z|exe|msi|iso|mp4|mkv|pdf|mp3)(\?|$)/i;
+
+        if (fileExtensionRegex.test(url) && !url.includes('.m3u8') && !url.includes('.mpd')) {
+            event.preventDefault();
+            event.stopPropagation();
+            chrome.runtime.sendMessage({
+                action: 'sendToPidm',
+                url: url,
+                isStream: false,
+                pageUrl: window.location.href,
+                referrer: document.referrer
+            });
+        }
+    }, true);
+
+    // --- Initialization ---
+    setInterval(injectVideoButtons, 2000);
+    window.addEventListener('load', injectVideoButtons);
 })();
